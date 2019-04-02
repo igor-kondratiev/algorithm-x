@@ -12,7 +12,7 @@ using namespace std;
 
 class TableNode;
 
-enum HeaderType 
+enum HeaderType
 {
     RowType,
     ColumnType
@@ -23,36 +23,36 @@ template<HeaderType T>
 class Header
 {
 private:
-	// Header's list pointers
-	weak_ptr<Header<T>> _prev;
-	shared_ptr<Header<T>> _next;
+    // Header's list pointers
+    weak_ptr<Header<T>> _prev;
+    shared_ptr<Header<T>> _next;
 
-	// Table line head
-	shared_ptr<TableNode> _head;
+    // Table line head
+    shared_ptr<TableNode> _head;
 
 public:
     int id;
 
-	shared_ptr<TableNode> head() { return _head; };
-	void head(shared_ptr<TableNode> node) { _head = node; };
+    shared_ptr<TableNode> head() { return _head; };
+    void head(shared_ptr<TableNode> node) { _head = node; };
 
     // Nodes count in line
     int nodes_count = 0;
 
-	shared_ptr<Header<T>> prev() { return _prev.lock(); };
-	void prev(shared_ptr<Header<T>> node) { _prev = node; };
-	
-	shared_ptr<Header<T>> next() { return _next; };
-	void next(shared_ptr<Header<T>> node) { _next = node; };
+    shared_ptr<Header<T>> prev() { return _prev.lock(); };
+    void prev(shared_ptr<Header<T>> node) { _prev = node; };
+
+    shared_ptr<Header<T>> next() { return _next; };
+    void next(shared_ptr<Header<T>> node) { _next = node; };
 
     Header(int id)
-        : id(id) 
+        : id(id)
     {
 
     }
 
     Header(int id, shared_ptr<Header<T>> prev, shared_ptr<Header<T>> next)
-        : id(id), _prev(prev), _next(next) 
+        : id(id), _prev(prev), _next(next)
     {
 
     }
@@ -63,9 +63,9 @@ template<HeaderType T>
 class HeaderList
 {
 private:
-	int _length;
+    int _length;
 
-	shared_ptr<Header<T>> _head;
+    shared_ptr<Header<T>> _head;
 
     map<int, weak_ptr<Header<T>>> cache;
 
@@ -75,9 +75,9 @@ private:
     }
 
 public:
-	int length() { return _length; };
+    int length() { return _length; };
 
-	shared_ptr<Header<T>> head() { return _head; };
+    shared_ptr<Header<T>> head() { return _head; };
 
     HeaderList(int length)
         : _length(length)
@@ -113,47 +113,47 @@ public:
         return nullptr;
     }
 
-	shared_ptr<Header<T>> eject(int id)
-	{
-		auto it = cache.find(id);
-		if (it != cache.end())
-		{
-			auto header = it->second.lock();
+    shared_ptr<Header<T>> eject(int id)
+    {
+        auto it = cache.find(id);
+        if (it != cache.end())
+        {
+            auto header = it->second.lock();
 
-			// Remove from list
-			header->prev()->next(header->next());
-			header->next()->prev(header->prev());
+            // Remove from list
+            header->prev()->next(header->next());
+            header->next()->prev(header->prev());
 
-			// Remove from cache
-			cache.erase(it);
+            // Remove from cache
+            cache.erase(it);
 
-			// Adjust head if needed
-			if (_head == header)
-				_head = _length > 1 ? _head->next() : nullptr;
+            // Adjust head if needed
+            if (_head == header)
+                _head = _length > 1 ? _head->next() : nullptr;
 
-			_length--;
+            _length--;
 
-			return header;
-		}
+            return header;
+        }
 
-		return nullptr;
-	}
+        return nullptr;
+    }
 
-	void restore(shared_ptr<Header<T>> header)
-	{
-		// Restore in list
-		header->prev()->next(header);
-		header->next()->prev(header);
+    void restore(shared_ptr<Header<T>> header)
+    {
+        // Restore in list
+        header->prev()->next(header);
+        header->next()->prev(header);
 
-		// Restore in cache
-		addToCache(header);
+        // Restore in cache
+        addToCache(header);
 
-		// Adjust head if needed
-		if (!_head || header->id < _head->id)
-			_head = header;
+        // Adjust head if needed
+        if (!_head || header->id < _head->id)
+            _head = header;
 
-		_length++;
-	}
+        _length++;
+    }
 };
 
 
@@ -161,7 +161,7 @@ using RowHeader = Header<RowType>;
 using ColumnHeader = Header<ColumnType>;
 
 
-class TableNode: public enable_shared_from_this<TableNode>
+class TableNode : public enable_shared_from_this<TableNode>
 {
 private:
     weak_ptr<TableNode> _left;
@@ -192,90 +192,90 @@ public:
     shared_ptr<ColumnHeader> column() const { return _column.lock(); }
     void column(shared_ptr<ColumnHeader> node) { _column = node; }
 
-	// Insert this horizontally after node
-	void insertAfterH(shared_ptr<TableNode> node)
-	{
-		this->left(node);
-		this->right(node->right());
-		this->left()->right(this->shared_from_this());
-		this->right()->left(this->shared_from_this());
-	}
+    // Insert this horizontally after node
+    void insertAfterH(shared_ptr<TableNode> node)
+    {
+        this->left(node);
+        this->right(node->right());
+        this->left()->right(this->shared_from_this());
+        this->right()->left(this->shared_from_this());
+    }
 
-	// Insert this vertically after node
-	void insertAfterV(shared_ptr<TableNode> node)
-	{
-		this->up(node);
-		this->down(node->down());
-		this->up()->down(this->shared_from_this());
-		this->down()->up(this->shared_from_this());
-	}
+    // Insert this vertically after node
+    void insertAfterV(shared_ptr<TableNode> node)
+    {
+        this->up(node);
+        this->down(node->down());
+        this->up()->down(this->shared_from_this());
+        this->down()->up(this->shared_from_this());
+    }
 
-	void removeFromColumn()
-	{
-		this->down()->up(this->up());
-		this->up()->down(this->down());
+    void removeFromColumn()
+    {
+        this->down()->up(this->up());
+        this->up()->down(this->down());
 
-		// Update head if needed
-		if (this->column()->head().get() == this)
-		{
-			if (this->column()->nodes_count > 1)
-				this->column()->head(this->down());
-			else
-				this->column()->head(nullptr);
-		}
+        // Update head if needed
+        if (this->column()->head().get() == this)
+        {
+            if (this->column()->nodes_count > 1)
+                this->column()->head(this->down());
+            else
+                this->column()->head(nullptr);
+        }
 
-		this->column()->nodes_count--;
-	}
+        this->column()->nodes_count--;
+    }
 
-	void restoreInColumn()
-	{
-		this->down()->up(this->shared_from_this());
-		this->up()->down(this->shared_from_this());
+    void restoreInColumn()
+    {
+        this->down()->up(this->shared_from_this());
+        this->up()->down(this->shared_from_this());
 
-		// Update head if needed
-		if (this->column()->head()->row()->id > this->row()->id)
-			this->column()->head(this->shared_from_this());
+        // Update head if needed
+        if (this->column()->head()->row()->id > this->row()->id)
+            this->column()->head(this->shared_from_this());
 
-		this->column()->nodes_count++;
-	}
+        this->column()->nodes_count++;
+    }
 
-	void removeFromRow()
-	{
-		this->right()->left(this->left());
-		this->left()->right(this->right());
+    void removeFromRow()
+    {
+        this->right()->left(this->left());
+        this->left()->right(this->right());
 
-		// Update head if needed
-		if (this->row()->head().get() == this)
-		{
-			if (this->row()->nodes_count > 1)
-				this->row()->head(this->right());
-			else
-				this->row()->head(nullptr);
-		}
+        // Update head if needed
+        if (this->row()->head().get() == this)
+        {
+            if (this->row()->nodes_count > 1)
+                this->row()->head(this->right());
+            else
+                this->row()->head(nullptr);
+        }
 
-		this->row()->nodes_count--;
-	}
+        this->row()->nodes_count--;
+    }
 
-	void restoreInRow()
-	{
-		this->right()->left(this->shared_from_this());
-		this->left()->right(this->shared_from_this());
+    void restoreInRow()
+    {
+        this->right()->left(this->shared_from_this());
+        this->left()->right(this->shared_from_this());
 
-		// Update head if needed
-		if (this->row()->head()->column()->id > this->column()->id)
-			this->row()->head(this->shared_from_this());
+        // Update head if needed
+        if (this->row()->head()->column()->id > this->column()->id)
+            this->row()->head(this->shared_from_this());
 
-		this->row()->nodes_count++;
-	}
+        this->row()->nodes_count++;
+    }
 
     string getDebugRepr()
     {
         stringstream stream;
-        stream << "Node (" << this->row()->id << "; " << this->column()->id << "): " << 
-                        "LEFT=(" << this->left()->row()->id << "; " << this->left()->column()->id << ") " <<
-                        "RIGHT=(" << this->right()->row()->id << "; " << this->right()->column()->id << ") " <<
-                        "UP=(" << this->up()->row()->id << "; " << this->up()->column()->id << ") " <<
-                        "DOWN=(" << this->down()->row()->id << "; " << this->down()->column()->id << ")" << endl;
+        stream << "Node (" << this->row()->id << "; " << this->column()->id << "): " <<
+            "LEFT=(" << this->left()->row()->id << "; " << this->left()->column()->id << ") " <<
+            "RIGHT=(" << this->right()->row()->id << "; " << this->right()->column()->id << ") " <<
+            "UP=(" << this->up()->row()->id << "; " << this->up()->column()->id << ") " <<
+            "DOWN=(" << this->down()->row()->id << "; " << this->down()->column()->id << ")" << endl;
         return stream.str();
     }
 };
@@ -290,7 +290,7 @@ public:
     SparseTable(int rows_count, int columns_count)
         : rows(rows_count), columns(columns_count)
     {
-        
+
     }
 
     shared_ptr<TableNode> createNode(int row_id, int column_id)
@@ -321,8 +321,8 @@ public:
         }
         else if (row->head()->column()->id > column_id)
         {
-			// Need to move head to right
-			node->insertAfterH(row->head()->left());
+            // Need to move head to right
+            node->insertAfterH(row->head()->left());
             row->head(node);
         }
         else
@@ -339,7 +339,7 @@ public:
                 throw runtime_error(stream.str());
             }
 
-			node->insertAfterH(p);
+            node->insertAfterH(p);
         }
 
         // Insert to column
@@ -352,7 +352,7 @@ public:
         else if (column->head()->row()->id > row_id)
         {
             // Need to move head to down
-			node->insertAfterV(column->head()->up());
+            node->insertAfterV(column->head()->up());
             column->head(node);
         }
         else
@@ -369,71 +369,71 @@ public:
                 throw runtime_error(stream.str());
             }
 
-			node->insertAfterV(p);
+            node->insertAfterV(p);
         }
 
         return node;
     }
 
-	shared_ptr<ColumnHeader> ejectColumn(int id)
-	{
-		shared_ptr<ColumnHeader> column = columns.eject(id);
+    shared_ptr<ColumnHeader> ejectColumn(int id)
+    {
+        shared_ptr<ColumnHeader> column = columns.eject(id);
 
-		auto p = column->head();
-		if (p)
-		{
-			do
-			{
-				p->removeFromRow();
-			} while ((p = p->down()) != column->head());
-		}
+        auto p = column->head();
+        if (p)
+        {
+            do
+            {
+                p->removeFromRow();
+            } while ((p = p->down()) != column->head());
+        }
 
-		return column;
-	}
+        return column;
+    }
 
-	void restoreColumn(shared_ptr<ColumnHeader> column)
-	{
-		columns.restore(column);
+    void restoreColumn(shared_ptr<ColumnHeader> column)
+    {
+        columns.restore(column);
 
-		auto p = column->head();
-		if (p)
-		{
-			do
-			{
-				p->restoreInRow();
-			} while ((p = p->down()) != column->head());
-		}
-	}
+        auto p = column->head();
+        if (p)
+        {
+            do
+            {
+                p->restoreInRow();
+            } while ((p = p->down()) != column->head());
+        }
+    }
 
-	shared_ptr<RowHeader> ejectRow(int id)
-	{
-		shared_ptr<RowHeader> row = rows.eject(id);
+    shared_ptr<RowHeader> ejectRow(int id)
+    {
+        shared_ptr<RowHeader> row = rows.eject(id);
 
-		auto p = row->head();
-		if (p)
-		{
-			do
-			{
-				p->removeFromColumn();
-			} while ((p = p->right()) != row->head());
-		}
+        auto p = row->head();
+        if (p)
+        {
+            do
+            {
+                p->removeFromColumn();
+            } while ((p = p->right()) != row->head());
+        }
 
-		return row;
-	}
+        return row;
+    }
 
-	void restoreRow(shared_ptr<RowHeader> row)
-	{
-		rows.restore(row);
+    void restoreRow(shared_ptr<RowHeader> row)
+    {
+        rows.restore(row);
 
-		auto p = row->head();
-		if (p)
-		{
-			do
-			{
-				p->restoreInColumn();
-			} while ((p = p->right()) != row->head());
-		}
-	}
+        auto p = row->head();
+        if (p)
+        {
+            do
+            {
+                p->restoreInColumn();
+            } while ((p = p->right()) != row->head());
+        }
+    }
 
     /*
     * Save matrix to file. This is for debug purposes only
@@ -471,7 +471,7 @@ public:
         do
         {
             fp << "Row " << rp->id << " nodes:" << endl;
-            
+
             auto np = rp->head();
             if (np)
             {
@@ -489,7 +489,7 @@ public:
         do
         {
             fp << "Column " << cp->id << " nodes:" << endl;
-            
+
             auto np = cp->head();
             if (np)
             {
@@ -534,15 +534,15 @@ void testMatrix2()
 
     matrix.printToFile("test_matrix_3.txt");
 
-	auto row = matrix.ejectRow(0);
-	auto column = matrix.ejectColumn(0);
+    auto row = matrix.ejectRow(0);
+    auto column = matrix.ejectColumn(0);
 
-	matrix.printToFile("test_matrix_4.txt");
+    matrix.printToFile("test_matrix_4.txt");
 
-	matrix.restoreColumn(column);
-	matrix.restoreRow(row);
+    matrix.restoreColumn(column);
+    matrix.restoreRow(row);
 
-	matrix.printToFile("test_matrix_5.txt");
+    matrix.printToFile("test_matrix_5.txt");
 }
 
 int main()
