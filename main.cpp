@@ -22,18 +22,28 @@ enum HeaderType
 template<HeaderType T>
 class Header
 {
+private:
+	// Header's list pointers
+	weak_ptr<Header<T>> _prev;
+	shared_ptr<Header<T>> _next;
+
+	// Table line head
+	shared_ptr<TableNode> _head;
+
 public:
     int id;
 
-    // Table line head
-    shared_ptr<TableNode> head;
+	shared_ptr<TableNode> head() { return _head; };
+	void head(shared_ptr<TableNode> node) { _head = node; };
 
     // Nodes count in line
     int nodes_count = 0;
 
-    // Headers list pointers
-    weak_ptr<Header<T>> prev;
-    shared_ptr<Header<T>> next;
+	shared_ptr<Header<T>> prev() { return _prev.lock(); };
+	void prev(shared_ptr<Header<T>> node) { _prev = node; };
+	
+	shared_ptr<Header<T>> next() { return _next; };
+	void next(shared_ptr<Header<T>> node) { _next = node; };
 
     Header(int id)
         : id(id) 
@@ -42,7 +52,7 @@ public:
     }
 
     Header(int id, shared_ptr<Header<T>> prev, shared_ptr<Header<T>> next)
-        : id(id), prev(prev), next(next) 
+        : id(id), _prev(prev), _next(next) 
     {
 
     }
@@ -53,6 +63,10 @@ template<HeaderType T>
 class HeaderList
 {
 private:
+	int _length;
+
+	shared_ptr<Header<T>> _head;
+
     map<int, weak_ptr<Header<T>>> cache;
 
     void addToCache(shared_ptr<Header<T>> item)
@@ -61,11 +75,12 @@ private:
     }
 
 public:
-    int length;
-    shared_ptr<Header<T>> head;
+	int length() { return _length; };
+
+	shared_ptr<Header<T>> head() { return _head; };
 
     HeaderList(int length)
-        : length(length)
+        : _length(length)
     {
         if (length <= 0)
         {
@@ -74,19 +89,19 @@ public:
             throw runtime_error(stream.str());
         }
 
-        head = make_shared<Header<T>>(0);
-        addToCache(head);
+        _head = make_shared<Header<T>>(0);
+        addToCache(_head);
 
-        shared_ptr<Header<T>> prev = head;
+        shared_ptr<Header<T>> p = _head;
         for (int i = 1; i < length; ++i)
         {
-            shared_ptr<Header<T>> current = make_shared<Header<T>>(i, prev, head);
-            prev->next = current;
+            shared_ptr<Header<T>> current = make_shared<Header<T>>(i, p, _head);
+            p->next(current);
 
             addToCache(current);
-            prev = current;
+            p = current;
         }
-        head->prev = prev;
+        _head->prev(p);
     }
 
     shared_ptr<Header<T>> get(int id)
@@ -97,6 +112,48 @@ public:
 
         return nullptr;
     }
+
+	shared_ptr<Header<T>> eject(int id)
+	{
+		auto it = cache.find(id);
+		if (it != cache.end())
+		{
+			auto header = it->second.lock();
+
+			// Remove from list
+			header->prev()->next(header->next());
+			header->next()->prev(header->prev());
+
+			// Remove from cache
+			cache.erase(it);
+
+			// Adjust head if needed
+			if (_head == header)
+				_head = _length > 1 ? _head->next() : nullptr;
+
+			_length--;
+
+			return header;
+		}
+
+		return nullptr;
+	}
+
+	void restore(shared_ptr<Header<T>> header)
+	{
+		// Restore in list
+		header->prev()->next(header);
+		header->next()->prev(header);
+
+		// Restore in cache
+		addToCache(header);
+
+		// Adjust head if needed
+		if (!_head || header->id < _head->id)
+			_head = header;
+
+		_length++;
+	}
 };
 
 
@@ -104,7 +161,7 @@ using RowHeader = Header<RowType>;
 using ColumnHeader = Header<ColumnType>;
 
 
-class TableNode
+class TableNode: public enable_shared_from_this<TableNode>
 {
 private:
     weak_ptr<TableNode> _left;
@@ -135,6 +192,82 @@ public:
     shared_ptr<ColumnHeader> column() const { return _column.lock(); }
     void column(shared_ptr<ColumnHeader> node) { _column = node; }
 
+	// Insert this horizontally after node
+	void insertAfterH(shared_ptr<TableNode> node)
+	{
+		this->left(node);
+		this->right(node->right());
+		this->left()->right(this->shared_from_this());
+		this->right()->left(this->shared_from_this());
+	}
+
+	// Insert this vertically after node
+	void insertAfterV(shared_ptr<TableNode> node)
+	{
+		this->up(node);
+		this->down(node->down());
+		this->up()->down(this->shared_from_this());
+		this->down()->up(this->shared_from_this());
+	}
+
+	void removeFromColumn()
+	{
+		this->down()->up(this->up());
+		this->up()->down(this->down());
+
+		// Update head if needed
+		if (this->column()->head().get() == this)
+		{
+			if (this->column()->nodes_count > 1)
+				this->column()->head(this->down());
+			else
+				this->column()->head(nullptr);
+		}
+
+		this->column()->nodes_count--;
+	}
+
+	void restoreInColumn()
+	{
+		this->down()->up(this->shared_from_this());
+		this->up()->down(this->shared_from_this());
+
+		// Update head if needed
+		if (this->column()->head()->row()->id > this->row()->id)
+			this->column()->head(this->shared_from_this());
+
+		this->column()->nodes_count++;
+	}
+
+	void removeFromRow()
+	{
+		this->right()->left(this->left());
+		this->left()->right(this->right());
+
+		// Update head if needed
+		if (this->row()->head().get() == this)
+		{
+			if (this->row()->nodes_count > 1)
+				this->row()->head(this->right());
+			else
+				this->row()->head(nullptr);
+		}
+
+		this->row()->nodes_count--;
+	}
+
+	void restoreInRow()
+	{
+		this->right()->left(this->shared_from_this());
+		this->left()->right(this->shared_from_this());
+
+		// Update head if needed
+		if (this->row()->head()->column()->id > this->column()->id)
+			this->row()->head(this->shared_from_this());
+
+		this->row()->nodes_count++;
+	}
+
     string getDebugRepr()
     {
         stringstream stream;
@@ -160,12 +293,12 @@ public:
         
     }
 
-    shared_ptr<TableNode> create_node(int row_id, int column_id)
+    shared_ptr<TableNode> createNode(int row_id, int column_id)
     {
-        if (row_id < 0 || row_id >= rows.length || column_id < 0 || column_id >= columns.length)
+        if (row_id < 0 || row_id >= rows.length() || column_id < 0 || column_id >= columns.length())
         {
             stringstream stream;
-            stream << "Wrong location got: (" << row_id << "; " << column_id << ") for matrix size (" << rows.length << "; " << columns.length << ")";
+            stream << "Wrong location got: (" << row_id << "; " << column_id << ") for matrix size (" << rows.length() << "; " << columns.length() << ")";
             throw runtime_error(stream.str());
         }
 
@@ -180,26 +313,22 @@ public:
         column->nodes_count++;
 
         // Insert into row
-        if (!row->head)
+        if (!row->head())
         {
-            row->head = node;
+            row->head(node);
             node->left(node);
             node->right(node);
         }
-        else if (row->head->column()->id > column_id)
+        else if (row->head()->column()->id > column_id)
         {
-            // Need to move head to right
-            node->right(row->head);
-            node->left(row->head->left());
-            node->right()->left(node);
-            node->left()->right(node);
-
-            row->head = node;
+			// Need to move head to right
+			node->insertAfterH(row->head()->left());
+            row->head(node);
         }
         else
         {
-            shared_ptr<TableNode> p = row->head;
-            while (p->right() != row->head && p->right()->column()->id < column_id)
+            shared_ptr<TableNode> p = row->head();
+            while (p->right() != row->head() && p->right()->column()->id < column_id)
                 p = p->right();
 
             // Check that node is not present yet
@@ -210,33 +339,26 @@ public:
                 throw runtime_error(stream.str());
             }
 
-            node->left(p);
-            node->right(p->right());
-            node->left()->right(node);
-            node->right()->left(node);
+			node->insertAfterH(p);
         }
 
         // Insert to column
-        if (!column->head)
+        if (!column->head())
         {
-            column->head = node;
+            column->head(node);
             node->up(node);
             node->down(node);
         }
-        else if (column->head->row()->id > row_id)
+        else if (column->head()->row()->id > row_id)
         {
             // Need to move head to down
-            node->down(column->head);
-            node->up(column->head->up());
-            node->down()->up(node);
-            node->up()->down(node);
-
-            column->head = node;
+			node->insertAfterV(column->head()->up());
+            column->head(node);
         }
         else
         {
-            shared_ptr<TableNode> p = column->head;
-            while (p->down() != column->head && p->down()->row()->id < row_id)
+            shared_ptr<TableNode> p = column->head();
+            while (p->down() != column->head() && p->down()->row()->id < row_id)
                 p = p->down();
 
             // Check that node is not present yet
@@ -247,130 +369,187 @@ public:
                 throw runtime_error(stream.str());
             }
 
-            node->up(p);
-            node->down(p->down());
-            node->up()->down(node);
-            node->down()->up(node);
+			node->insertAfterV(p);
         }
 
         return node;
     }
 
+	shared_ptr<ColumnHeader> ejectColumn(int id)
+	{
+		shared_ptr<ColumnHeader> column = columns.eject(id);
+
+		auto p = column->head();
+		if (p)
+		{
+			do
+			{
+				p->removeFromRow();
+			} while ((p = p->down()) != column->head());
+		}
+
+		return column;
+	}
+
+	void restoreColumn(shared_ptr<ColumnHeader> column)
+	{
+		columns.restore(column);
+
+		auto p = column->head();
+		if (p)
+		{
+			do
+			{
+				p->restoreInRow();
+			} while ((p = p->down()) != column->head());
+		}
+	}
+
+	shared_ptr<RowHeader> ejectRow(int id)
+	{
+		shared_ptr<RowHeader> row = rows.eject(id);
+
+		auto p = row->head();
+		if (p)
+		{
+			do
+			{
+				p->removeFromColumn();
+			} while ((p = p->right()) != row->head());
+		}
+
+		return row;
+	}
+
+	void restoreRow(shared_ptr<RowHeader> row)
+	{
+		rows.restore(row);
+
+		auto p = row->head();
+		if (p)
+		{
+			do
+			{
+				p->restoreInColumn();
+			} while ((p = p->right()) != row->head());
+		}
+	}
+
     /*
     * Save matrix to file. This is for debug purposes only
     * To be honest, looks quite ugly
     */
-    void print_to_file(string filename)
+    void printToFile(string filename)
     {
         ofstream fp(filename, ofstream::out);
 
         // General information first
-        fp << "Matrix size: (" << rows.length << "; " << columns.length << ")" << endl;
+        fp << "Matrix size: (" << rows.length() << "; " << columns.length() << ")" << endl;
 
         fp << "--------------------" << endl;
 
         // Rows general information
-        auto rp = rows.head;
+        auto rp = rows.head();
         do
         {
             fp << "Row " << rp->id << " has " << rp->nodes_count << " nodes" << endl;
-            rp = rp->next;
-        } while (rp != rows.head);
+        } while ((rp = rp->next()) != rows.head());
 
         fp << "--------------------" << endl;
 
         // Columns general information
-        auto cp = columns.head;
+        auto cp = columns.head();
         do
         {
             fp << "Column " << cp->id << " has " << cp->nodes_count << " nodes" << endl;
-            cp = cp->next;
-        } while (cp != columns.head);
+        } while ((cp = cp->next()) != columns.head());
 
         fp << "--------------------" << endl;
 
         // Detailed nodes dump by rows
-        rp = rows.head;
+        rp = rows.head();
         do
         {
             fp << "Row " << rp->id << " nodes:" << endl;
             
-            auto np = rp->head;
+            auto np = rp->head();
             if (np)
             {
                 do
                 {
                     fp << np->getDebugRepr();
-                    np = np->right();
-                } while (np != rp->head);
+                } while ((np = np->right()) != rp->head());
             }
-
-            rp = rp->next;
-        } while (rp != rows.head);
+        } while ((rp = rp->next()) != rows.head());
 
         fp << "--------------------" << endl;
 
         // Detailed nodes dump by columns
-        cp = columns.head;
+        cp = columns.head();
         do
         {
             fp << "Column " << cp->id << " nodes:" << endl;
             
-            auto np = cp->head;
+            auto np = cp->head();
             if (np)
             {
                 do
                 {
                     fp << np->getDebugRepr();
-                    np = np->down();
-                } while (np != cp->head);
+                } while ((np = np->down()) != cp->head());
             }
-
-            cp = cp->next;
-        } while (cp != columns.head);
+        } while ((cp = cp->next()) != columns.head());
 
         fp.close();
     }
 };
 
 
-void test_matrix_2()
+void testMatrix2()
 {
     SparseTable matrix(6, 7);
 
-    matrix.create_node(1, 0);
-    matrix.create_node(1, 3);
+    matrix.createNode(1, 0);
+    matrix.createNode(1, 3);
 
-    matrix.create_node(0, 6);
-    matrix.create_node(0, 3);
-    matrix.create_node(0, 0);
+    matrix.createNode(0, 6);
+    matrix.createNode(0, 3);
+    matrix.createNode(0, 0);
 
-    matrix.create_node(2, 3);
-    matrix.create_node(2, 6);
-    matrix.create_node(2, 4);
+    matrix.createNode(2, 3);
+    matrix.createNode(2, 6);
+    matrix.createNode(2, 4);
 
-    matrix.create_node(3, 2);
-    matrix.create_node(3, 4);
-    matrix.create_node(3, 5);
+    matrix.createNode(3, 2);
+    matrix.createNode(3, 4);
+    matrix.createNode(3, 5);
 
-    matrix.create_node(4, 1);
-    matrix.create_node(4, 2);
-    matrix.create_node(4, 5);
-    matrix.create_node(4, 6);
+    matrix.createNode(4, 1);
+    matrix.createNode(4, 2);
+    matrix.createNode(4, 5);
+    matrix.createNode(4, 6);
 
-    matrix.create_node(5, 1);
-    matrix.create_node(5, 6);
+    matrix.createNode(5, 1);
+    matrix.createNode(5, 6);
 
-    matrix.print_to_file("test_matrix_2.txt");
+    matrix.printToFile("test_matrix_3.txt");
+
+	auto row = matrix.ejectRow(0);
+	auto column = matrix.ejectColumn(0);
+
+	matrix.printToFile("test_matrix_4.txt");
+
+	matrix.restoreColumn(column);
+	matrix.restoreRow(row);
+
+	matrix.printToFile("test_matrix_5.txt");
 }
 
 int main()
 {
-    test_matrix_2();
-//    test_matrix();
-
-    // Filling in the data
+    testMatrix2();
 
     cout << "Hello world!" << endl;
+
     return 0;
 }
