@@ -6,6 +6,8 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
+#include <stack>
 
 using namespace std;
 
@@ -37,7 +39,7 @@ public:
     void head(shared_ptr<TableNode> node) { _head = node; };
 
     // Nodes count in line
-    int nodes_count = 0;
+    int nodesCount = 0;
 
     shared_ptr<Header<T>> prev() { return _prev.lock(); };
     void prev(shared_ptr<Header<T>> node) { _prev = node; };
@@ -218,13 +220,13 @@ public:
         // Update head if needed
         if (this->column()->head().get() == this)
         {
-            if (this->column()->nodes_count > 1)
+            if (this->column()->nodesCount > 1)
                 this->column()->head(this->down());
             else
                 this->column()->head(nullptr);
         }
 
-        this->column()->nodes_count--;
+        this->column()->nodesCount--;
     }
 
     void restoreInColumn()
@@ -233,10 +235,10 @@ public:
         this->up()->down(this->shared_from_this());
 
         // Update head if needed
-        if (this->column()->head()->row()->id > this->row()->id)
+        if (!this->column()->head() || this->column()->head()->row()->id > this->row()->id)
             this->column()->head(this->shared_from_this());
 
-        this->column()->nodes_count++;
+        this->column()->nodesCount++;
     }
 
     void removeFromRow()
@@ -247,13 +249,13 @@ public:
         // Update head if needed
         if (this->row()->head().get() == this)
         {
-            if (this->row()->nodes_count > 1)
+            if (this->row()->nodesCount > 1)
                 this->row()->head(this->right());
             else
                 this->row()->head(nullptr);
         }
 
-        this->row()->nodes_count--;
+        this->row()->nodesCount--;
     }
 
     void restoreInRow()
@@ -262,10 +264,10 @@ public:
         this->left()->right(this->shared_from_this());
 
         // Update head if needed
-        if (this->row()->head()->column()->id > this->column()->id)
+        if (!this->row()->head() || this->row()->head()->column()->id > this->column()->id)
             this->row()->head(this->shared_from_this());
 
-        this->row()->nodes_count++;
+        this->row()->nodesCount++;
     }
 
     string getDebugRepr()
@@ -306,11 +308,11 @@ public:
 
         auto row = rows.get(row_id);
         node->row(row);
-        row->nodes_count++;
+        row->nodesCount++;
 
         auto column = columns.get(column_id);
         node->column(column);
-        column->nodes_count++;
+        column->nodesCount++;
 
         // Insert into row
         if (!row->head())
@@ -452,7 +454,7 @@ public:
         auto rp = rows.head();
         do
         {
-            fp << "Row " << rp->id << " has " << rp->nodes_count << " nodes" << endl;
+            fp << "Row " << rp->id << " has " << rp->nodesCount << " nodes" << endl;
         } while ((rp = rp->next()) != rows.head());
 
         fp << "--------------------" << endl;
@@ -461,7 +463,7 @@ public:
         auto cp = columns.head();
         do
         {
-            fp << "Column " << cp->id << " has " << cp->nodes_count << " nodes" << endl;
+            fp << "Column " << cp->id << " has " << cp->nodesCount << " nodes" << endl;
         } while ((cp = cp->next()) != columns.head());
 
         fp << "--------------------" << endl;
@@ -501,6 +503,117 @@ public:
         } while ((cp = cp->next()) != columns.head());
 
         fp.close();
+    }
+};
+
+struct BackupFrame
+{
+    shared_ptr<ColumnHeader> column;
+    stack<shared_ptr<RowHeader>> rows;
+};
+
+class AlgorithmX
+{
+private:
+    SparseTable table;
+
+    shared_ptr<ColumnHeader> findPivotColumn()
+    {
+        shared_ptr<ColumnHeader> p = table.columns.head();
+        shared_ptr<ColumnHeader> pivot = table.columns.head();
+
+        do
+        {
+            if (p->nodesCount < pivot->nodesCount)
+                pivot = p;
+        } while ((p = p->next()) != table.columns.head());
+
+        return pivot;
+    }
+
+    void solveIteration(vector<int>& solution)
+    {
+        if (table.columns.length() == 0)
+        {
+            // We have solution
+            // TODO: Save it somewhere
+            cout << "SOLUTION:" << endl;
+
+            for (int i = 0; i < solution.size(); ++i)
+                cout << solution[i] << endl;
+
+            return;
+        }
+
+        shared_ptr<ColumnHeader> pivotColumn = findPivotColumn();
+        if (pivotColumn->nodesCount == 0)
+            return;
+
+        shared_ptr<RowHeader> pivotRow = pivotColumn->head()->row();
+        do
+        {
+            // Preparations 
+            table.ejectRow(pivotRow->id);
+            stack<BackupFrame> backup;
+
+            shared_ptr<TableNode> node = pivotRow->head();
+            do
+            {
+                BackupFrame frame;
+                shared_ptr<TableNode> p = node->column()->head();
+                while (node->column()->nodesCount != 0)
+                {
+                    frame.rows.push(table.ejectRow(p->row()->id));
+                    p = p->down();
+                } 
+                
+                frame.column = table.ejectColumn(node->column()->id);
+                backup.push(frame);
+
+                
+            } while ((node = node->right()) != pivotRow->head());
+
+            solution.push_back(pivotRow->id);
+
+            solveIteration(solution);
+
+            solution.pop_back();
+
+            // Restore ejected
+            while (!backup.empty())
+            {
+                BackupFrame frame = backup.top();
+
+                table.restoreColumn(frame.column);
+                while (!frame.rows.empty())
+                {
+                    table.restoreRow(frame.rows.top());
+                    frame.rows.pop();
+                }
+
+                backup.pop();
+            }
+
+            table.restoreRow(pivotRow);
+
+        } while ((pivotRow = pivotRow->next()) != pivotColumn->head()->row());
+    }
+
+public:
+    AlgorithmX(int sets_count, int universe_size)
+        : table(sets_count, universe_size) 
+    {
+    }
+
+    void createNode(int set_id, int id)
+    {
+        table.createNode(set_id, id);
+    }
+
+    void solve()
+    {
+        vector<int> solution;
+        solveIteration(solution);
     }
 };
 
@@ -545,11 +658,41 @@ void testMatrix2()
     matrix.printToFile("test_matrix_5.txt");
 }
 
+void testAlgo()
+{
+    AlgorithmX solver(6, 7);
+
+    solver.createNode(1, 0);
+    solver.createNode(1, 3);
+
+    solver.createNode(0, 6);
+    solver.createNode(0, 3);
+    solver.createNode(0, 0);
+
+    solver.createNode(2, 3);
+    solver.createNode(2, 6);
+    solver.createNode(2, 4);
+
+    solver.createNode(3, 2);
+    solver.createNode(3, 4);
+    solver.createNode(3, 5);
+
+    solver.createNode(4, 1);
+    solver.createNode(4, 2);
+    solver.createNode(4, 5);
+    solver.createNode(4, 6);
+
+    solver.createNode(5, 1);
+    solver.createNode(5, 6);
+
+    solver.solve();
+}
+
 int main()
 {
-    testMatrix2();
+    testAlgo();
 
-    cout << "Hello world!" << endl;
+    cin.get();
 
     return 0;
 }
