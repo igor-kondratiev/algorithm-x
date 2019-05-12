@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 #include <stack>
+#include <chrono>
+
 
 using namespace std;
 
@@ -517,6 +519,8 @@ class AlgorithmX
 private:
     SparseTable table;
 
+    bool finished = false;
+
     shared_ptr<ColumnHeader> findPivotColumn()
     {
         shared_ptr<ColumnHeader> p = table.columns.head();
@@ -531,23 +535,20 @@ private:
         return pivot;
     }
 
-    void solveIteration(vector<int>& solution)
+    bool solveIteration(vector<int>& solution)
     {
         if (table.columns.length() == 0)
         {
             // We have solution
-            // TODO: Save it somewhere
-            cout << "SOLUTION:" << endl;
 
-            for (int i = 0; i < solution.size(); ++i)
-                cout << solution[i] << endl;
+            finalSolution = solution;
 
-            return;
+            return true;
         }
 
         shared_ptr<ColumnHeader> pivotColumn = findPivotColumn();
         if (pivotColumn->nodesCount == 0)
-            return;
+            return false;
 
         shared_ptr<RowHeader> pivotRow = pivotColumn->head()->row();
         do
@@ -565,17 +566,17 @@ private:
                 {
                     frame.rows.push(table.ejectRow(p->row()->id));
                     p = p->down();
-                } 
-                
+                }
+
                 frame.column = table.ejectColumn(node->column()->id);
                 backup.push(frame);
 
-                
+
             } while ((node = node->right()) != pivotRow->head());
 
             solution.push_back(pivotRow->id);
 
-            solveIteration(solution);
+            bool done = solveIteration(solution);
 
             solution.pop_back();
 
@@ -596,101 +597,225 @@ private:
 
             table.restoreRow(pivotRow);
 
+            if (done)
+                return true;
+
         } while ((pivotRow = pivotRow->next()) != pivotColumn->head()->row());
+
+        return false;
     }
 
 public:
-    AlgorithmX(int sets_count, int universe_size)
-        : table(sets_count, universe_size) 
+    vector<int> finalSolution;
+
+    AlgorithmX(int setsCount, int universeSize)
+        : table(setsCount, universeSize)
     {
     }
 
-    void createNode(int set_id, int id)
+    void createNode(int setID, int id)
     {
-        table.createNode(set_id, id);
+        table.createNode(setID, id);
     }
 
-    void solve()
+    // Return true if solution found
+    bool solve()
     {
+        if (finished)
+            throw runtime_error("Cannot run algorithm twice");
+
         vector<int> solution;
         solveIteration(solution);
+
+        // Prevent from double execution
+        finished = true;
+
+        return finalSolution.size() != 0;
     }
 };
 
 
-void testMatrix2()
+class SudokuProblem
 {
-    SparseTable matrix(6, 7);
+private:
+    static const int PROBLEM_SIZE = 9;
 
-    matrix.createNode(1, 0);
-    matrix.createNode(1, 3);
+    static const int ROW_COL_OFFSET = 0;
+    static const int ROW_NUM_OFFSET = PROBLEM_SIZE * PROBLEM_SIZE;
+    static const int COL_NUM_OFFSET = 2 * PROBLEM_SIZE * PROBLEM_SIZE;
+    static const int BOX_NUM_OFFSET = 3 * PROBLEM_SIZE * PROBLEM_SIZE;
+    static const int FILLED_NUM_OFFSET = 4 * PROBLEM_SIZE * PROBLEM_SIZE;
 
-    matrix.createNode(0, 6);
-    matrix.createNode(0, 3);
-    matrix.createNode(0, 0);
+    int filledCellsCount = 0;
+    vector<vector<int>> problem;
 
-    matrix.createNode(2, 3);
-    matrix.createNode(2, 6);
-    matrix.createNode(2, 4);
+public:
+    bool hasSolution = false;
+    vector<vector<int>> solvedProblem;
 
-    matrix.createNode(3, 2);
-    matrix.createNode(3, 4);
-    matrix.createNode(3, 5);
+    SudokuProblem(int* data)
+        : problem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0)), solvedProblem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0))
+    {
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+            {
+                problem[i][j] = data[i + j * PROBLEM_SIZE];
+                if (problem[i][j] != 0)
+                    ++filledCellsCount;
+            }
+    }
 
-    matrix.createNode(4, 1);
-    matrix.createNode(4, 2);
-    matrix.createNode(4, 5);
-    matrix.createNode(4, 6);
+    // Load sudoku table from text file
+    SudokuProblem(char* filename)
+        : problem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0)), solvedProblem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0))
+    {
+        ifstream fp(filename, ofstream::in);
 
-    matrix.createNode(5, 1);
-    matrix.createNode(5, 6);
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+            {
+                int t;
+                fp >> t;
 
-    matrix.printToFile("test_matrix_3.txt");
+                if (t < 0 || t > PROBLEM_SIZE)
+                {
+                    stringstream stream;
+                    stream << "Wrong item in input file: " << t;
+                    throw runtime_error(stream.str());
+                }
 
-    auto row = matrix.ejectRow(0);
-    auto column = matrix.ejectColumn(0);
+                problem[i][j] = t;
 
-    matrix.printToFile("test_matrix_4.txt");
+                if (t != 0)
+                    ++filledCellsCount;
+            }
 
-    matrix.restoreColumn(column);
-    matrix.restoreRow(row);
+        fp.close();
+    }
 
-    matrix.printToFile("test_matrix_5.txt");
-}
+    void solve()
+    {
+        int variants = PROBLEM_SIZE * PROBLEM_SIZE * PROBLEM_SIZE;
+        int universePower = 4 * PROBLEM_SIZE * PROBLEM_SIZE + filledCellsCount;
+        AlgorithmX algo(variants, universePower);
 
-void testAlgo()
+        // Preparations
+        // Row-Column constraints first
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+                for (int v = 0; v < PROBLEM_SIZE; ++v)
+                    algo.createNode(packRowID(i, j, v), ROW_COL_OFFSET + packColID(i, j));
+
+        // Row-Number constraints
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+                for (int v = 0; v < PROBLEM_SIZE; ++v)
+                    algo.createNode(packRowID(i, j, v), ROW_NUM_OFFSET + packColID(i, v));
+
+        // Column-Number constraints
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+                for (int v = 0; v < PROBLEM_SIZE; ++v)
+                    algo.createNode(packRowID(i, j, v), COL_NUM_OFFSET + packColID(j, v));
+
+        // Box-Number constraints
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+                for (int v = 0; v < PROBLEM_SIZE; ++v)
+                    algo.createNode(packRowID(i, j, v), BOX_NUM_OFFSET + packColID(getBoxID(i, j), v));
+
+        // Filled numbers constraints
+        int counter = 0;
+        for (int i = 0; i < PROBLEM_SIZE; ++i)
+            for (int j = 0; j < PROBLEM_SIZE; ++j)
+            {
+                if (problem[i][j] != 0)
+                    algo.createNode(packRowID(i, j, problem[i][j] - 1), FILLED_NUM_OFFSET + counter++);
+            }
+
+        auto start = std::chrono::steady_clock::now();
+
+        bool success = algo.solve();
+
+        cout << "Solution was successfull: " << success << endl;
+
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+        double ms = duration.count();
+
+        cout << "Solution took " << ms << "ms" << endl;
+
+        // Decoding result
+        hasSolution = success && algo.finalSolution.size() == PROBLEM_SIZE * PROBLEM_SIZE;
+        if (hasSolution)
+        {
+            for (int i = 0; i < algo.finalSolution.size(); ++i)
+            {
+                int t = algo.finalSolution[i];
+                int x = t / (PROBLEM_SIZE * PROBLEM_SIZE);
+                int y = (t - x * (PROBLEM_SIZE * PROBLEM_SIZE)) / PROBLEM_SIZE;
+                int v = t % PROBLEM_SIZE + 1;
+
+                solvedProblem[x][y] = v;
+            }
+        }
+    }
+
+    int packRowID(int i, int j, int v)
+    {
+        return i * PROBLEM_SIZE * PROBLEM_SIZE + j * PROBLEM_SIZE + v;
+    }
+
+    int packColID(int i, int j)
+    {
+        return i * PROBLEM_SIZE + j;
+    }
+
+    int getBoxID(int i, int j)
+    {
+        return (j / 3) * 3 + (i / 3);
+    }
+};
+
+int solve(int* data, int* out)
 {
-    AlgorithmX solver(6, 7);
+    SudokuProblem p(data);
 
-    solver.createNode(1, 0);
-    solver.createNode(1, 3);
+    try
+    {
+        p.solve();
+    }
+    catch (...)
+    {
+        return -1;
+    }
 
-    solver.createNode(0, 6);
-    solver.createNode(0, 3);
-    solver.createNode(0, 0);
+    if (p.hasSolution)
+    {
+        for (int i = 0; i < 9; ++i)
+            for (int j = 0; j < 9; ++j)
+                out[i + j * 9] = p.solvedProblem[i][j];
 
-    solver.createNode(2, 3);
-    solver.createNode(2, 6);
-    solver.createNode(2, 4);
-
-    solver.createNode(3, 2);
-    solver.createNode(3, 4);
-    solver.createNode(3, 5);
-
-    solver.createNode(4, 1);
-    solver.createNode(4, 2);
-    solver.createNode(4, 5);
-    solver.createNode(4, 6);
-
-    solver.createNode(5, 1);
-    solver.createNode(5, 6);
-
-    solver.solve();
+        return 0;
+    }
+    else
+        return -2;
 }
 
 int main()
 {
-    testAlgo();
+    SudokuProblem p("test_sudoku.txt");
+    p.solve();
+
+    if (p.hasSolution)
+    {
+        for (int i = 0; i < 9; i++)
+        {
+            for (int j = 0; j < 9; j++)
+                cout << p.solvedProblem[i][j] << " ";
+
+            cout << endl;
+        }
+    }
 
     cin.get();
 
