@@ -1,14 +1,13 @@
+#include <cassert>
 #include <iostream>
-#include <exception>
 #include <string>
-#include <sstream>
-#include <map>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 #include <stack>
 #include <chrono>
+#include <limits>
 
 
 using namespace std;
@@ -22,141 +21,99 @@ enum HeaderType
     ColumnType
 };
 
+const uint16_t INVALID_NODE_ID = numeric_limits<uint16_t>::max();
+
 
 template<HeaderType T>
-class Header
+struct Header
 {
-private:
-    // Header's list pointers
-    weak_ptr<Header<T>> _prev;
-    shared_ptr<Header<T>> _next;
+    uint16_t m_id;
 
-    // Table line head
-    shared_ptr<TableNode> _head;
+    uint16_t m_nextId;
+    uint16_t m_prevId;
 
-public:
-    int id;
+    uint16_t m_nodesCount = 0;
+    uint16_t m_headNodeId = INVALID_NODE_ID;
 
-    shared_ptr<TableNode> head() { return _head; };
-    void head(shared_ptr<TableNode> node) { _head = node; };
-
-    // Nodes count in line
-    int nodesCount = 0;
-
-    shared_ptr<Header<T>> prev() { return _prev.lock(); };
-    void prev(shared_ptr<Header<T>> node) { _prev = node; };
-
-    shared_ptr<Header<T>> next() { return _next; };
-    void next(shared_ptr<Header<T>> node) { _next = node; };
-
-    Header(int id)
-        : id(id)
+    Header(uint16_t id, uint16_t nextId, uint16_t prevId)
+        : m_id(id)
+        , m_nextId(nextId)
+        , m_prevId(prevId)
     {
-
     }
 
-    Header(int id, shared_ptr<Header<T>> prev, shared_ptr<Header<T>> next)
-        : id(id), _prev(prev), _next(next)
-    {
+    Header(Header&&) = default;
+    Header(const Header&) = delete;
+    Header& operator=(const Header&) = delete;
 
-    }
+    inline bool isEmpty() const { return m_nodesCount == 0; }
 };
 
 
 template<HeaderType T>
-class HeaderList
+struct HeaderList
 {
-private:
-    int _length;
+    uint16_t m_headId = 0;
+    uint16_t m_length;
+    vector<Header<T>> m_nodesPool;
 
-    shared_ptr<Header<T>> _head;
-
-    map<int, weak_ptr<Header<T>>> cache;
-
-    void addToCache(shared_ptr<Header<T>> item)
+    HeaderList(uint16_t length)
+        : m_length(length)
     {
-        cache[item->id] = item;
-    }
+        assert(length > 0);
 
-public:
-    int length() { return _length; };
-
-    shared_ptr<Header<T>> head() { return _head; };
-
-    HeaderList(int length)
-        : _length(length)
-    {
-        if (length <= 0)
-        {
-            stringstream stream;
-            stream << "Wrong length: " << length;
-            throw runtime_error(stream.str());
-        }
-
-        _head = make_shared<Header<T>>(0);
-        addToCache(_head);
-
-        shared_ptr<Header<T>> p = _head;
+        m_nodesPool.reserve(length);
+        m_nodesPool.emplace_back(0, 1 % length, length - 1);
         for (int i = 1; i < length; ++i)
         {
-            shared_ptr<Header<T>> current = make_shared<Header<T>>(i, p, _head);
-            p->next(current);
-
-            addToCache(current);
-            p = current;
+            m_nodesPool.emplace_back(i, (i + 1) % length, i - 1);
         }
-        _head->prev(p);
     }
 
-    shared_ptr<Header<T>> get(int id)
-    {
-        auto it = cache.find(id);
-        if (it != cache.end())
-            return it->second.lock();
+    HeaderList(HeaderList&&) = default;
+    HeaderList(const HeaderList&) = delete;
+    HeaderList& operator=(const HeaderList&) = delete;
 
-        return nullptr;
+    inline uint16_t length() const { return m_length; }
+
+    inline Header<T>& head() 
+    {
+        assert(m_length > 0);
+        return m_nodesPool[m_headId]; 
+    };
+
+    inline Header<T>& get(uint16_t id)
+    {
+        return m_nodesPool[id];
     }
 
-    shared_ptr<Header<T>> eject(int id)
+    Header<T>& eject(uint16_t id)
     {
-        auto it = cache.find(id);
-        if (it != cache.end())
+        m_nodesPool[m_nodesPool[id].m_prevId].m_nextId = m_nodesPool[id].m_nextId;
+        m_nodesPool[m_nodesPool[id].m_nextId].m_prevId = m_nodesPool[id].m_prevId;
+
+        --m_length;
+
+        if (m_headId == id)
         {
-            auto header = it->second.lock();
-
-            // Remove from list
-            header->prev()->next(header->next());
-            header->next()->prev(header->prev());
-
-            // Remove from cache
-            cache.erase(it);
-
-            // Adjust head if needed
-            if (_head == header)
-                _head = _length > 1 ? _head->next() : nullptr;
-
-            _length--;
-
-            return header;
+            m_headId = m_length > 0 ? m_nodesPool[m_headId].m_nextId : INVALID_NODE_ID;
         }
 
-        return nullptr;
+        return m_nodesPool[id];
     }
 
-    void restore(shared_ptr<Header<T>> header)
+    void restore(Header<T>& header)
     {
-        // Restore in list
-        header->prev()->next(header);
-        header->next()->prev(header);
+        m_nodesPool[header.m_prevId].m_nextId = header.m_id;
+        m_nodesPool[header.m_nextId].m_prevId = header.m_id;
 
-        // Restore in cache
-        addToCache(header);
+        ++m_length;
 
-        // Adjust head if needed
-        if (!_head || header->id < _head->id)
-            _head = header;
-
-        _length++;
+        // INVALID_NODE_ID is always bigger than any valid id
+        if (header.m_id < m_headId)
+        {
+            m_headId = header.m_id;
+        }
     }
 };
 
@@ -165,416 +122,474 @@ using RowHeader = Header<RowType>;
 using ColumnHeader = Header<ColumnType>;
 
 
-class TableNode : public enable_shared_from_this<TableNode>
+struct TableNode
 {
-private:
-    weak_ptr<TableNode> _left;
-    shared_ptr<TableNode> _right;
+    uint16_t m_id;
 
-    weak_ptr<TableNode> _up;
-    shared_ptr<TableNode> _down;
+    uint16_t m_rowId;
+    uint16_t m_columnId;
 
-    weak_ptr<RowHeader> _row;
-    weak_ptr<ColumnHeader> _column;
+    uint16_t m_leftId  = INVALID_NODE_ID;
+    uint16_t m_rightId = INVALID_NODE_ID;
+    uint16_t m_upId    = INVALID_NODE_ID;
+    uint16_t m_downId  = INVALID_NODE_ID;
 
-public:
-    shared_ptr<TableNode> left() const { return _left.lock(); }
-    void left(shared_ptr<TableNode> node) { _left = node; }
-
-    shared_ptr<TableNode> right() const { return _right; }
-    void right(shared_ptr<TableNode> node) { _right = node; }
-
-    shared_ptr<TableNode> up() const { return _up.lock(); }
-    void up(shared_ptr<TableNode> node) { _up = node; }
-
-    shared_ptr<TableNode> down() const { return _down; }
-    void down(shared_ptr<TableNode> node) { _down = node; }
-
-    shared_ptr<RowHeader> row() const { return _row.lock(); }
-    void row(shared_ptr<RowHeader> node) { _row = node; }
-
-    shared_ptr<ColumnHeader> column() const { return _column.lock(); }
-    void column(shared_ptr<ColumnHeader> node) { _column = node; }
-
-    // Insert this horizontally after node
-    void insertAfterH(shared_ptr<TableNode> node)
+    TableNode(uint16_t id, uint16_t rowId, uint16_t columnId)
+        : m_id(id)
+        , m_rowId(rowId)
+        , m_columnId(columnId)
     {
-        this->left(node);
-        this->right(node->right());
-        this->left()->right(this->shared_from_this());
-        this->right()->left(this->shared_from_this());
     }
 
-    // Insert this vertically after node
-    void insertAfterV(shared_ptr<TableNode> node)
-    {
-        this->up(node);
-        this->down(node->down());
-        this->up()->down(this->shared_from_this());
-        this->down()->up(this->shared_from_this());
-    }
-
-    void removeFromColumn()
-    {
-        this->down()->up(this->up());
-        this->up()->down(this->down());
-
-        // Update head if needed
-        if (this->column()->head().get() == this)
-        {
-            if (this->column()->nodesCount > 1)
-                this->column()->head(this->down());
-            else
-                this->column()->head(nullptr);
-        }
-
-        this->column()->nodesCount--;
-    }
-
-    void restoreInColumn()
-    {
-        this->down()->up(this->shared_from_this());
-        this->up()->down(this->shared_from_this());
-
-        // Update head if needed
-        if (!this->column()->head() || this->column()->head()->row()->id > this->row()->id)
-            this->column()->head(this->shared_from_this());
-
-        this->column()->nodesCount++;
-    }
-
-    void removeFromRow()
-    {
-        this->right()->left(this->left());
-        this->left()->right(this->right());
-
-        // Update head if needed
-        if (this->row()->head().get() == this)
-        {
-            if (this->row()->nodesCount > 1)
-                this->row()->head(this->right());
-            else
-                this->row()->head(nullptr);
-        }
-
-        this->row()->nodesCount--;
-    }
-
-    void restoreInRow()
-    {
-        this->right()->left(this->shared_from_this());
-        this->left()->right(this->shared_from_this());
-
-        // Update head if needed
-        if (!this->row()->head() || this->row()->head()->column()->id > this->column()->id)
-            this->row()->head(this->shared_from_this());
-
-        this->row()->nodesCount++;
-    }
-
-    string getDebugRepr()
-    {
-        stringstream stream;
-        stream << "Node (" << this->row()->id << "; " << this->column()->id << "): " <<
-            "LEFT=(" << this->left()->row()->id << "; " << this->left()->column()->id << ") " <<
-            "RIGHT=(" << this->right()->row()->id << "; " << this->right()->column()->id << ") " <<
-            "UP=(" << this->up()->row()->id << "; " << this->up()->column()->id << ") " <<
-            "DOWN=(" << this->down()->row()->id << "; " << this->down()->column()->id << ")" << endl;
-        return stream.str();
-    }
+    TableNode(TableNode&&) = default;
+    TableNode(const TableNode&) = delete;
+    TableNode& operator=(const TableNode&) = delete;
 };
 
 
 class SparseTable
 {
 public:
-    HeaderList<RowType> rows;
-    HeaderList<ColumnType> columns;
+    vector<TableNode> m_nodesPool;
 
-    SparseTable(int rows_count, int columns_count)
-        : rows(rows_count), columns(columns_count)
+    HeaderList<RowType> m_rows;
+    HeaderList<ColumnType> m_columns;
+
+    SparseTable(uint16_t rowsCount, uint16_t columnsCount, uint16_t nodesCount)
+        : m_rows(rowsCount)
+        , m_columns(columnsCount)
     {
-
+        m_nodesPool.reserve(nodesCount);
     }
 
-    shared_ptr<TableNode> createNode(int row_id, int column_id)
+    SparseTable(const SparseTable&) = delete;
+    SparseTable& operator=(const SparseTable&) = delete;
+
+    void reserveNodes(uint16_t nodesCount)
     {
-        if (row_id < 0 || row_id >= rows.length() || column_id < 0 || column_id >= columns.length())
-        {
-            stringstream stream;
-            stream << "Wrong location got: (" << row_id << "; " << column_id << ") for matrix size (" << rows.length() << "; " << columns.length() << ")";
-            throw runtime_error(stream.str());
-        }
+        m_nodesPool.reserve(nodesCount);
+    }
 
-        shared_ptr<TableNode> node = make_shared<TableNode>();
+    void createNode(uint16_t rowId, uint16_t columnId)
+    {
+        assert(rowId >= 0 && rowId < m_rows.m_length && columnId >= 0 && columnId < m_columns.m_length);
 
-        auto row = rows.get(row_id);
-        node->row(row);
-        row->nodesCount++;
+        const uint16_t nodeId = static_cast<uint16_t>(m_nodesPool.size());
+        m_nodesPool.emplace_back(nodeId, rowId, columnId);
+        TableNode& node = m_nodesPool.back();
 
-        auto column = columns.get(column_id);
-        node->column(column);
-        column->nodesCount++;
+        auto& row = m_rows.get(rowId);
+        auto& column = m_columns.get(columnId);
 
         // Insert into row
-        if (!row->head())
+        if (row.isEmpty())
         {
-            row->head(node);
-            node->left(node);
-            node->right(node);
+            row.m_headNodeId = nodeId;
+            node.m_leftId = nodeId;
+            node.m_rightId = nodeId;
         }
-        else if (row->head()->column()->id > column_id)
+        else if (m_nodesPool[row.m_headNodeId].m_columnId > columnId)
         {
             // Need to move head to right
-            node->insertAfterH(row->head()->left());
-            row->head(node);
+            hInsertAfter(nodeId, m_nodesPool[row.m_headNodeId].m_leftId);
+            row.m_headNodeId = nodeId;
         }
         else
         {
-            shared_ptr<TableNode> p = row->head();
-            while (p->right() != row->head() && p->right()->column()->id < column_id)
-                p = p->right();
+            uint16_t targetId = row.m_headNodeId;
+            while (m_nodesPool[targetId].m_rightId != row.m_headNodeId && m_nodesPool[m_nodesPool[targetId].m_rightId].m_columnId < columnId)
+                targetId = m_nodesPool[targetId].m_rightId;
 
-            // Check that node is not present yet
-            if (p->right()->column()->id == column_id)
-            {
-                stringstream stream;
-                stream << "Node at (" << row_id << "; " << column_id << ") already exists";
-                throw runtime_error(stream.str());
-            }
-
-            node->insertAfterH(p);
+            hInsertAfter(nodeId, targetId);
         }
 
         // Insert to column
-        if (!column->head())
+        if (column.isEmpty())
         {
-            column->head(node);
-            node->up(node);
-            node->down(node);
+            column.m_headNodeId = nodeId;
+            node.m_upId = nodeId;
+            node.m_downId = nodeId;
         }
-        else if (column->head()->row()->id > row_id)
+        else if (m_nodesPool[column.m_headNodeId].m_rowId > rowId)
         {
-            // Need to move head to down
-            node->insertAfterV(column->head()->up());
-            column->head(node);
+            // Need to move head down
+            vInsertAfter(nodeId, m_nodesPool[column.m_headNodeId].m_upId);
+            column.m_headNodeId = nodeId;
         }
         else
         {
-            shared_ptr<TableNode> p = column->head();
-            while (p->down() != column->head() && p->down()->row()->id < row_id)
-                p = p->down();
+            uint16_t targetId = column.m_headNodeId;
+            while (m_nodesPool[targetId].m_downId != column.m_headNodeId && m_nodesPool[m_nodesPool[targetId].m_downId].m_rowId < rowId)
+                targetId = m_nodesPool[targetId].m_downId;
 
-            // Check that node is not present yet
-            if (p->down()->row()->id == row_id)
-            {
-                stringstream stream;
-                stream << "Node at (" << row_id << "; " << column_id << ") already exists";
-                throw runtime_error(stream.str());
-            }
-
-            node->insertAfterV(p);
+            vInsertAfter(nodeId, targetId);
         }
 
-        return node;
+        ++row.m_nodesCount;
+        ++column.m_nodesCount;
     }
 
-    shared_ptr<ColumnHeader> ejectColumn(int id)
+    // Insert X horizontally after node Y
+    void hInsertAfter(uint16_t xId, uint16_t yId)
     {
-        shared_ptr<ColumnHeader> column = columns.eject(id);
-
-        auto p = column->head();
-        if (p)
-        {
-            do
-            {
-                p->removeFromRow();
-            } while ((p = p->down()) != column->head());
-        }
-
-        return column;
+        auto& x = m_nodesPool[xId];
+        auto& y = m_nodesPool[yId];
+     
+        x.m_leftId = yId;
+        x.m_rightId = y.m_rightId;
+        m_nodesPool[x.m_leftId].m_rightId = xId;
+        m_nodesPool[x.m_rightId].m_leftId = xId;
     }
 
-    void restoreColumn(shared_ptr<ColumnHeader> column)
+    // Insert X vertically after node Y
+    void vInsertAfter(uint16_t xId, uint16_t yId)
     {
-        columns.restore(column);
+        auto& x = m_nodesPool[xId];
+        auto& y = m_nodesPool[yId];
 
-        auto p = column->head();
-        if (p)
+        x.m_upId = yId;
+        x.m_downId = y.m_downId;
+        m_nodesPool[x.m_upId].m_downId = xId;
+        m_nodesPool[x.m_downId].m_upId = xId;
+    }
+
+    void removeFromColumn(uint16_t nodeId)
+    {
+        auto& node = m_nodesPool[nodeId];
+
+        m_nodesPool[node.m_upId].m_downId = node.m_downId;
+        m_nodesPool[node.m_downId].m_upId = node.m_upId;
+
+        // Update head if needed
+        auto& column = m_columns.get(node.m_columnId);
+        if (column.m_headNodeId == nodeId)
         {
+            if (column.m_nodesCount > 1)
+                column.m_headNodeId = node.m_downId;
+            else
+                column.m_headNodeId = INVALID_NODE_ID;
+        }
+
+        --column.m_nodesCount;
+    }
+
+    void restoreInColumn(uint16_t nodeId)
+    {
+        auto& node = m_nodesPool[nodeId];
+
+        m_nodesPool[node.m_upId].m_downId = nodeId;
+        m_nodesPool[node.m_downId].m_upId = nodeId;
+
+        // Update head if needed
+        auto& column = m_columns.get(node.m_columnId);
+        if (column.isEmpty() || m_nodesPool[column.m_headNodeId].m_rowId > node.m_rowId)
+            column.m_headNodeId = nodeId;
+
+        ++column.m_nodesCount;
+    }
+
+    void removeFromRow(uint16_t nodeId)
+    {
+        auto& node = m_nodesPool[nodeId];
+
+        m_nodesPool[node.m_rightId].m_leftId = node.m_leftId;
+        m_nodesPool[node.m_leftId].m_rightId = node.m_rightId;
+
+        // Update head if needed
+        auto& row = m_rows.get(node.m_rowId);
+        if (row.m_headNodeId == nodeId)
+        {
+            if (row.m_nodesCount > 1)
+                row.m_headNodeId = node.m_rightId;
+            else
+                row.m_headNodeId = INVALID_NODE_ID;
+        }
+
+        --row.m_nodesCount;
+    }
+
+    void restoreInRow(uint16_t nodeId)
+    {
+        auto& node = m_nodesPool[nodeId];
+
+        m_nodesPool[node.m_rightId].m_leftId = nodeId;
+        m_nodesPool[node.m_leftId].m_rightId = nodeId;
+
+        // Update head if needed
+        auto& row = m_rows.get(node.m_rowId);
+        if (row.isEmpty() || m_nodesPool[row.m_headNodeId].m_columnId > node.m_columnId)
+            row.m_headNodeId = nodeId;
+
+        ++row.m_nodesCount;
+    }
+
+    void ejectColumn(int id)
+    {
+        ColumnHeader& column = m_columns.eject(id);
+
+        if (column.m_nodesCount > 0)
+        {
+            uint16_t nodeId = column.m_headNodeId;
             do
             {
-                p->restoreInRow();
-            } while ((p = p->down()) != column->head());
+                removeFromRow(nodeId);
+                nodeId = m_nodesPool[nodeId].m_downId;
+            } while (nodeId != column.m_headNodeId);
         }
     }
 
-    shared_ptr<RowHeader> ejectRow(int id)
+    void restoreColumn(uint16_t columnId)
     {
-        shared_ptr<RowHeader> row = rows.eject(id);
+        auto& column = m_columns.get(columnId);
+        m_columns.restore(column);
 
-        auto p = row->head();
-        if (p)
+        if (column.m_nodesCount > 0)
         {
+            uint16_t nodeId = column.m_headNodeId;
             do
             {
-                p->removeFromColumn();
-            } while ((p = p->right()) != row->head());
+                restoreInRow(nodeId);
+                nodeId = m_nodesPool[nodeId].m_downId;
+            } while (nodeId != column.m_headNodeId);
         }
-
-        return row;
     }
 
-    void restoreRow(shared_ptr<RowHeader> row)
+    void ejectRow(int id)
     {
-        rows.restore(row);
+        RowHeader& row = m_rows.eject(id);
 
-        auto p = row->head();
-        if (p)
+        if (row.m_nodesCount > 0)
         {
+            uint16_t nodeId = row.m_headNodeId;
             do
             {
-                p->restoreInColumn();
-            } while ((p = p->right()) != row->head());
+                removeFromColumn(nodeId);
+                nodeId = m_nodesPool[nodeId].m_rightId;
+            } while (nodeId != row.m_headNodeId);
         }
+    }
+
+    void restoreRow(uint16_t rowId)
+    {
+        auto& row = m_rows.get(rowId);
+        m_rows.restore(row);
+
+        if (row.m_nodesCount > 0)
+        {
+            uint16_t nodeId = row.m_headNodeId;
+            do
+            {
+                restoreInColumn(nodeId);
+                nodeId = m_nodesPool[nodeId].m_rightId;
+            } while (nodeId != row.m_headNodeId);
+        }
+    }
+
+    void dumpDebugRepr(uint16_t nodeId, ostream& stream)
+    {
+        auto& node = m_nodesPool[nodeId];
+        auto& left = m_nodesPool[node.m_leftId];
+        auto& right = m_nodesPool[node.m_rightId];
+        auto& up = m_nodesPool[node.m_upId];
+        auto& down = m_nodesPool[node.m_downId];
+
+        stream << "Node (" << node.m_rowId << "; " << node.m_columnId << "): " <<
+            "LEFT=("  << left.m_rowId  << "; " << left.m_columnId  << ") " <<
+            "RIGHT=(" << right.m_rowId << "; " << right.m_columnId << ") " <<
+            "UP=("    << up.m_rowId    << "; " << up.m_columnId    << ") " <<
+            "DOWN=("  << down.m_rowId  << "; " << down.m_columnId  << ")" << endl;
     }
 
     /*
     * Save matrix to file. This is for debug purposes only
-    * To be honest, looks quite ugly
+    * To be honest, looks quite ugly and uses streams
     */
     void printToFile(string filename)
     {
         ofstream fp(filename, ofstream::out);
 
         // General information first
-        fp << "Matrix size: (" << rows.length() << "; " << columns.length() << ")" << endl;
-
+        fp << "Matrix size: (" << m_rows.length() << "; " << m_columns.length() << ")" << endl;
         fp << "--------------------" << endl;
 
         // Rows general information
-        auto rp = rows.head();
-        do
         {
-            fp << "Row " << rp->id << " has " << rp->nodesCount << " nodes" << endl;
-        } while ((rp = rp->next()) != rows.head());
+            uint16_t rowId = m_rows.m_headId;
+            do
+            {
+                auto& rp = m_rows.get(rowId);
+                fp << "Row " << rp.m_id << " has " << rp.m_nodesCount << " nodes" << endl;
+                rowId = rp.m_nextId;
+            } while (rowId != m_rows.m_headId);
+        }
 
         fp << "--------------------" << endl;
 
         // Columns general information
-        auto cp = columns.head();
-        do
         {
-            fp << "Column " << cp->id << " has " << cp->nodesCount << " nodes" << endl;
-        } while ((cp = cp->next()) != columns.head());
+            uint16_t columnId = m_columns.m_headId;
+            do
+            {
+                auto& cp = m_columns.get(columnId);
+                fp << "Column " << cp.m_id << " has " << cp.m_nodesCount << " nodes" << endl;
+                columnId = cp.m_nextId;
+            } while (columnId != m_columns.m_headId);
+        }
 
         fp << "--------------------" << endl;
 
         // Detailed nodes dump by rows
-        rp = rows.head();
-        do
         {
-            fp << "Row " << rp->id << " nodes:" << endl;
-
-            auto np = rp->head();
-            if (np)
+            uint16_t rowId = m_rows.m_headId;
+            do
             {
-                do
+                auto& rp = m_rows.get(rowId);
+                fp << "Row " << rp.m_id << " nodes:" << endl;
+
+                if (!rp.isEmpty())
                 {
-                    fp << np->getDebugRepr();
-                } while ((np = np->right()) != rp->head());
-            }
-        } while ((rp = rp->next()) != rows.head());
+                    uint16_t nodeId = rp.m_headNodeId;
+                    do
+                    {
+                        dumpDebugRepr(nodeId, fp);
+                        nodeId = m_nodesPool[nodeId].m_rightId;
+                    } while (nodeId != rp.m_headNodeId);
+                }
+                rowId = rp.m_nextId;
+            } while (rowId != m_rows.m_headId);
+        }
 
         fp << "--------------------" << endl;
 
         // Detailed nodes dump by columns
-        cp = columns.head();
+        uint16_t columnId = m_columns.m_headId;
         do
         {
-            fp << "Column " << cp->id << " nodes:" << endl;
+            auto& cp = m_columns.get(columnId);
+            fp << "Column " << cp.m_id << " nodes:" << endl;
 
-            auto np = cp->head();
-            if (np)
+            if (!cp.isEmpty())
             {
+                uint16_t nodeId = cp.m_headNodeId;
                 do
                 {
-                    fp << np->getDebugRepr();
-                } while ((np = np->down()) != cp->head());
+                    dumpDebugRepr(nodeId, fp);
+                    nodeId = m_nodesPool[nodeId].m_downId;
+                } while (nodeId != cp.m_headNodeId);
             }
-        } while ((cp = cp->next()) != columns.head());
+            columnId = cp.m_nextId;
+        } while (columnId != m_columns.m_headId);
 
         fp.close();
     }
 };
 
-struct BackupFrame
-{
-    shared_ptr<ColumnHeader> column;
-    stack<shared_ptr<RowHeader>> rows;
-};
-
 class AlgorithmX
 {
 private:
-    SparseTable table;
+    SparseTable m_table;
+    bool m_finished = false;
+    vector<uint16_t> m_finalSolution;
 
-    bool finished = false;
-
-    shared_ptr<ColumnHeader> findPivotColumn()
+public:
+    AlgorithmX(uint16_t setsCount, uint16_t universeSize, uint16_t nodesCount)
+        : m_table(setsCount, universeSize, nodesCount)
     {
-        shared_ptr<ColumnHeader> p = table.columns.head();
-        shared_ptr<ColumnHeader> pivot = table.columns.head();
+    }
+
+    void reserveNodes(uint16_t nodesCount)
+    {
+        m_table.reserveNodes(nodesCount);
+    }
+
+    void createNode(uint16_t setId, uint16_t id)
+    {
+        m_table.createNode(setId, id);
+    }
+
+    const vector<uint16_t>& getSolution() const { return m_finalSolution; }
+
+    bool solve()
+    {
+        assert(!m_finished);
+
+        vector<uint16_t> solution;
+        solveIteration(solution);
+
+        // Prevent double execution
+        m_finished = true;
+
+        return m_finalSolution.size() != 0;
+    }
+
+private:
+    struct BackupFrame
+    {
+        uint16_t m_columnId = INVALID_NODE_ID;
+        stack<uint16_t> m_rowIds;
+    };
+
+    ColumnHeader* findPivotColumn()
+    {
+        ColumnHeader* p = &m_table.m_columns.head();
+        ColumnHeader* pivot = &m_table.m_columns.head();
 
         do
         {
-            if (p->nodesCount < pivot->nodesCount)
+            if (p->m_nodesCount < pivot->m_nodesCount)
                 pivot = p;
-        } while ((p = p->next()) != table.columns.head());
+            p = &m_table.m_columns.get(p->m_nextId);
+        } while (p->m_id != m_table.m_columns.m_headId);
 
         return pivot;
     }
 
-    bool solveIteration(vector<int>& solution)
+    bool solveIteration(vector<uint16_t>& solution)
     {
-        if (table.columns.length() == 0)
+        if (m_table.m_columns.length() == 0)
         {
             // We have solution
 
-            finalSolution = solution;
+            m_finalSolution = solution;
 
             return true;
         }
 
-        shared_ptr<ColumnHeader> pivotColumn = findPivotColumn();
-        if (pivotColumn->nodesCount == 0)
+        ColumnHeader* pivotColumn = findPivotColumn();
+        if (pivotColumn->m_nodesCount == 0)
             return false;
 
-        shared_ptr<RowHeader> pivotRow = pivotColumn->head()->row();
+        RowHeader* pivotRow = &m_table.m_rows.get(m_table.m_nodesPool[pivotColumn->m_headNodeId].m_rowId);
         do
         {
             // Preparations 
-            table.ejectRow(pivotRow->id);
+            m_table.ejectRow(pivotRow->m_id);
             stack<BackupFrame> backup;
 
-            shared_ptr<TableNode> node = pivotRow->head();
+            TableNode* node = &m_table.m_nodesPool[pivotRow->m_headNodeId];
             do
             {
                 BackupFrame frame;
-                shared_ptr<TableNode> p = node->column()->head();
-                while (node->column()->nodesCount != 0)
+                auto& column = m_table.m_columns.get(node->m_columnId);
+                if (column.m_nodesCount > 0)
                 {
-                    frame.rows.push(table.ejectRow(p->row()->id));
-                    p = p->down();
+                    TableNode* p = &m_table.m_nodesPool[column.m_headNodeId];
+                    while (column.m_nodesCount != 0)
+                    {
+                        m_table.ejectRow(p->m_rowId);
+                        frame.m_rowIds.push(p->m_rowId);
+                        p = &m_table.m_nodesPool[p->m_downId];
+                    }
                 }
 
-                frame.column = table.ejectColumn(node->column()->id);
+                m_table.ejectColumn(node->m_columnId);
+                frame.m_columnId = node->m_columnId;
                 backup.push(frame);
 
+                node = &m_table.m_nodesPool[node->m_rightId];
+            } while (node->m_id != pivotRow->m_headNodeId);
 
-            } while ((node = node->right()) != pivotRow->head());
-
-            solution.push_back(pivotRow->id);
+            solution.push_back(pivotRow->m_id);
 
             bool done = solveIteration(solution);
 
@@ -585,52 +600,25 @@ private:
             {
                 BackupFrame frame = backup.top();
 
-                table.restoreColumn(frame.column);
-                while (!frame.rows.empty())
+                m_table.restoreColumn(frame.m_columnId);
+                while (!frame.m_rowIds.empty())
                 {
-                    table.restoreRow(frame.rows.top());
-                    frame.rows.pop();
+                    m_table.restoreRow(frame.m_rowIds.top());
+                    frame.m_rowIds.pop();
                 }
 
                 backup.pop();
             }
 
-            table.restoreRow(pivotRow);
+            m_table.restoreRow(pivotRow->m_id);
 
             if (done)
                 return true;
 
-        } while ((pivotRow = pivotRow->next()) != pivotColumn->head()->row());
+            pivotRow = &m_table.m_rows.get(pivotRow->m_nextId);
+        } while (pivotRow->m_id != m_table.m_nodesPool[pivotColumn->m_headNodeId].m_rowId);
 
         return false;
-    }
-
-public:
-    vector<int> finalSolution;
-
-    AlgorithmX(int setsCount, int universeSize)
-        : table(setsCount, universeSize)
-    {
-    }
-
-    void createNode(int setID, int id)
-    {
-        table.createNode(setID, id);
-    }
-
-    // Return true if solution found
-    bool solve()
-    {
-        if (finished)
-            throw runtime_error("Cannot run algorithm twice");
-
-        vector<int> solution;
-        solveIteration(solution);
-
-        // Prevent from double execution
-        finished = true;
-
-        return finalSolution.size() != 0;
     }
 };
 
@@ -657,12 +645,14 @@ public:
         : problem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0)), solvedProblem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0))
     {
         for (int i = 0; i < PROBLEM_SIZE; ++i)
+        {
             for (int j = 0; j < PROBLEM_SIZE; ++j)
             {
                 problem[i][j] = data[i + j * PROBLEM_SIZE];
                 if (problem[i][j] != 0)
                     ++filledCellsCount;
             }
+        }
     }
 
     // Load sudoku table from text file
@@ -677,12 +667,7 @@ public:
                 int t;
                 fp >> t;
 
-                if (t < 0 || t > PROBLEM_SIZE)
-                {
-                    stringstream stream;
-                    stream << "Wrong item in input file: " << t;
-                    throw runtime_error(stream.str());
-                }
+                assert(t >= 0 && t <= PROBLEM_SIZE);
 
                 problem[i][j] = t;
 
@@ -695,9 +680,9 @@ public:
 
     void solve()
     {
-        int variants = PROBLEM_SIZE * PROBLEM_SIZE * PROBLEM_SIZE;
-        int universePower = 4 * PROBLEM_SIZE * PROBLEM_SIZE + filledCellsCount;
-        AlgorithmX algo(variants, universePower);
+        uint16_t variants = PROBLEM_SIZE * PROBLEM_SIZE * PROBLEM_SIZE;
+        uint16_t universePower = 4 * PROBLEM_SIZE * PROBLEM_SIZE + filledCellsCount;
+        AlgorithmX algo(variants, universePower, universePower);
 
         // Preparations
         // Row-Column constraints first
@@ -739,18 +724,19 @@ public:
 
         cout << "Solution was successfull: " << success << endl;
 
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
         double ms = duration.count();
 
-        cout << "Solution took " << ms << "ms" << endl;
+        cout << "Solution took " << ms << " microseconds" << endl;
 
         // Decoding result
-        hasSolution = success && algo.finalSolution.size() == PROBLEM_SIZE * PROBLEM_SIZE;
+        const vector<uint16_t> solution = algo.getSolution();
+        hasSolution = success && solution.size() == PROBLEM_SIZE * PROBLEM_SIZE;
         if (hasSolution)
         {
-            for (int i = 0; i < algo.finalSolution.size(); ++i)
+            for (int i = 0; i < solution.size(); ++i)
             {
-                int t = algo.finalSolution[i];
+                int t = solution[i];
                 int x = t / (PROBLEM_SIZE * PROBLEM_SIZE);
                 int y = (t - x * (PROBLEM_SIZE * PROBLEM_SIZE)) / PROBLEM_SIZE;
                 int v = t % PROBLEM_SIZE + 1;
