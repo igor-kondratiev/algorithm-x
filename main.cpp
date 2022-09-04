@@ -13,7 +13,7 @@
 using namespace std;
 
 
-class TableNode;
+const uint16_t INVALID_NODE_ID = numeric_limits<uint16_t>::max();
 
 enum HeaderType
 {
@@ -21,9 +21,7 @@ enum HeaderType
     ColumnType
 };
 
-const uint16_t INVALID_NODE_ID = numeric_limits<uint16_t>::max();
-
-
+#pragma pack(push,1)
 template<HeaderType T>
 struct Header
 {
@@ -42,12 +40,15 @@ struct Header
     {
     }
 
+    // Non-copyable, but movable to allow 
+    // storing nodes in a pre-allocated vector
     Header(Header&&) = default;
     Header(const Header&) = delete;
     Header& operator=(const Header&) = delete;
 
     inline bool isEmpty() const { return m_nodesCount == 0; }
 };
+#pragma pack(pop)
 
 
 template<HeaderType T>
@@ -87,7 +88,7 @@ struct HeaderList
         return m_nodesPool[id];
     }
 
-    Header<T>& eject(uint16_t id)
+    inline Header<T>& eject(uint16_t id)
     {
         m_nodesPool[m_nodesPool[id].m_prevId].m_nextId = m_nodesPool[id].m_nextId;
         m_nodesPool[m_nodesPool[id].m_nextId].m_prevId = m_nodesPool[id].m_prevId;
@@ -102,7 +103,7 @@ struct HeaderList
         return m_nodesPool[id];
     }
 
-    void restore(Header<T>& header)
+    inline void restore(Header<T>& header)
     {
         m_nodesPool[header.m_prevId].m_nextId = header.m_id;
         m_nodesPool[header.m_nextId].m_prevId = header.m_id;
@@ -122,6 +123,7 @@ using RowHeader = Header<RowType>;
 using ColumnHeader = Header<ColumnType>;
 
 
+#pragma pack(push,1)
 struct TableNode
 {
     uint16_t m_id;
@@ -145,6 +147,7 @@ struct TableNode
     TableNode(const TableNode&) = delete;
     TableNode& operator=(const TableNode&) = delete;
 };
+#pragma pack(pop)
 
 
 class SparseTable
@@ -164,11 +167,6 @@ public:
 
     SparseTable(const SparseTable&) = delete;
     SparseTable& operator=(const SparseTable&) = delete;
-
-    void reserveNodes(uint16_t nodesCount)
-    {
-        m_nodesPool.reserve(nodesCount);
-    }
 
     void createNode(uint16_t rowId, uint16_t columnId)
     {
@@ -253,7 +251,7 @@ public:
         m_nodesPool[x.m_downId].m_upId = xId;
     }
 
-    void removeFromColumn(uint16_t nodeId)
+    inline void removeFromColumn(uint16_t nodeId)
     {
         auto& node = m_nodesPool[nodeId];
 
@@ -273,7 +271,7 @@ public:
         --column.m_nodesCount;
     }
 
-    void restoreInColumn(uint16_t nodeId)
+    inline void restoreInColumn(uint16_t nodeId)
     {
         auto& node = m_nodesPool[nodeId];
 
@@ -288,7 +286,7 @@ public:
         ++column.m_nodesCount;
     }
 
-    void removeFromRow(uint16_t nodeId)
+    inline void removeFromRow(uint16_t nodeId)
     {
         auto& node = m_nodesPool[nodeId];
 
@@ -308,7 +306,7 @@ public:
         --row.m_nodesCount;
     }
 
-    void restoreInRow(uint16_t nodeId)
+    inline void restoreInRow(uint16_t nodeId)
     {
         auto& node = m_nodesPool[nodeId];
 
@@ -323,7 +321,7 @@ public:
         ++row.m_nodesCount;
     }
 
-    void ejectColumn(int id)
+    inline void ejectColumn(int id)
     {
         ColumnHeader& column = m_columns.eject(id);
 
@@ -338,7 +336,7 @@ public:
         }
     }
 
-    void restoreColumn(uint16_t columnId)
+    inline void restoreColumn(uint16_t columnId)
     {
         auto& column = m_columns.get(columnId);
         m_columns.restore(column);
@@ -354,7 +352,7 @@ public:
         }
     }
 
-    void ejectRow(int id)
+    inline void ejectRow(int id)
     {
         RowHeader& row = m_rows.eject(id);
 
@@ -369,7 +367,7 @@ public:
         }
     }
 
-    void restoreRow(uint16_t rowId)
+    inline void restoreRow(uint16_t rowId)
     {
         auto& row = m_rows.get(rowId);
         m_rows.restore(row);
@@ -497,17 +495,12 @@ public:
     {
     }
 
-    void reserveNodes(uint16_t nodesCount)
-    {
-        m_table.reserveNodes(nodesCount);
-    }
-
-    void createNode(uint16_t setId, uint16_t id)
+    inline void createNode(uint16_t setId, uint16_t id)
     {
         m_table.createNode(setId, id);
     }
 
-    const vector<uint16_t>& getSolution() const { return m_finalSolution; }
+    inline const vector<uint16_t>& getSolution() const { return m_finalSolution; }
 
     bool solve()
     {
@@ -526,7 +519,7 @@ private:
     struct BackupFrame
     {
         uint16_t m_columnId = INVALID_NODE_ID;
-        stack<uint16_t> m_rowIds;
+        vector<uint16_t> m_rowIds;
     };
 
     ColumnHeader* findPivotColumn()
@@ -559,32 +552,36 @@ private:
         if (pivotColumn->m_nodesCount == 0)
             return false;
 
-        RowHeader* pivotRow = &m_table.m_rows.get(m_table.m_nodesPool[pivotColumn->m_headNodeId].m_rowId);
+        uint16_t startingPivotRowId = m_table.m_nodesPool[pivotColumn->m_headNodeId].m_rowId;
+        RowHeader* pivotRow = &m_table.m_rows.get(startingPivotRowId);
         do
         {
             // Preparations 
             m_table.ejectRow(pivotRow->m_id);
-            stack<BackupFrame> backup;
+            vector<BackupFrame> backup;
+            backup.reserve(pivotRow->m_nodesCount);
 
             TableNode* node = &m_table.m_nodesPool[pivotRow->m_headNodeId];
             do
             {
-                BackupFrame frame;
+                backup.emplace_back();
+                BackupFrame& frame = backup.back();
                 auto& column = m_table.m_columns.get(node->m_columnId);
                 if (column.m_nodesCount > 0)
                 {
+                    frame.m_rowIds.reserve(column.m_nodesCount);
+
                     TableNode* p = &m_table.m_nodesPool[column.m_headNodeId];
                     while (column.m_nodesCount != 0)
                     {
                         m_table.ejectRow(p->m_rowId);
-                        frame.m_rowIds.push(p->m_rowId);
+                        frame.m_rowIds.push_back(p->m_rowId);
                         p = &m_table.m_nodesPool[p->m_downId];
                     }
                 }
 
                 m_table.ejectColumn(node->m_columnId);
                 frame.m_columnId = node->m_columnId;
-                backup.push(frame);
 
                 node = &m_table.m_nodesPool[node->m_rightId];
             } while (node->m_id != pivotRow->m_headNodeId);
@@ -592,31 +589,27 @@ private:
             solution.push_back(pivotRow->m_id);
 
             bool done = solveIteration(solution);
+            if (done)
+                return true;
 
             solution.pop_back();
 
             // Restore ejected
-            while (!backup.empty())
+            for (int i = backup.size() - 1; i >= 0; --i)
             {
-                BackupFrame frame = backup.top();
+                BackupFrame frame = backup[i];
 
                 m_table.restoreColumn(frame.m_columnId);
-                while (!frame.m_rowIds.empty())
+                for (int j = frame.m_rowIds.size() - 1; j >= 0; --j)
                 {
-                    m_table.restoreRow(frame.m_rowIds.top());
-                    frame.m_rowIds.pop();
+                    m_table.restoreRow(frame.m_rowIds[j]);
                 }
-
-                backup.pop();
             }
 
             m_table.restoreRow(pivotRow->m_id);
 
-            if (done)
-                return true;
-
             pivotRow = &m_table.m_rows.get(pivotRow->m_nextId);
-        } while (pivotRow->m_id != m_table.m_nodesPool[pivotColumn->m_headNodeId].m_rowId);
+        } while (pivotRow->m_id != startingPivotRowId);
 
         return false;
     }
@@ -641,48 +634,26 @@ public:
     bool hasSolution = false;
     vector<vector<int>> solvedProblem;
 
-    SudokuProblem(int* data)
+    SudokuProblem(const string& data)
         : problem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0)), solvedProblem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0))
     {
         for (int i = 0; i < PROBLEM_SIZE; ++i)
         {
             for (int j = 0; j < PROBLEM_SIZE; ++j)
             {
-                problem[i][j] = data[i + j * PROBLEM_SIZE];
+                problem[i][j] = data[i * PROBLEM_SIZE + j] == '.' ? 0 : data[i * PROBLEM_SIZE + j] - '0';
                 if (problem[i][j] != 0)
                     ++filledCellsCount;
             }
         }
     }
 
-    // Load sudoku table from text file
-    SudokuProblem(char* filename)
-        : problem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0)), solvedProblem(PROBLEM_SIZE, vector<int>(PROBLEM_SIZE, 0))
-    {
-        ifstream fp(filename, ofstream::in);
-
-        for (int i = 0; i < PROBLEM_SIZE; ++i)
-            for (int j = 0; j < PROBLEM_SIZE; ++j)
-            {
-                int t;
-                fp >> t;
-
-                assert(t >= 0 && t <= PROBLEM_SIZE);
-
-                problem[i][j] = t;
-
-                if (t != 0)
-                    ++filledCellsCount;
-            }
-
-        fp.close();
-    }
-
     void solve()
     {
         uint16_t variants = PROBLEM_SIZE * PROBLEM_SIZE * PROBLEM_SIZE;
         uint16_t universePower = 4 * PROBLEM_SIZE * PROBLEM_SIZE + filledCellsCount;
-        AlgorithmX algo(variants, universePower, universePower);
+        uint16_t nodesCount = 4 * PROBLEM_SIZE * PROBLEM_SIZE * PROBLEM_SIZE + filledCellsCount;
+        AlgorithmX algo(variants, universePower, nodesCount);
 
         // Preparations
         // Row-Column constraints first
@@ -693,20 +664,20 @@ public:
 
         // Row-Number constraints
         for (int i = 0; i < PROBLEM_SIZE; ++i)
-            for (int j = 0; j < PROBLEM_SIZE; ++j)
-                for (int v = 0; v < PROBLEM_SIZE; ++v)
+            for (int v = 0; v < PROBLEM_SIZE; ++v)
+                for (int j = 0; j < PROBLEM_SIZE; ++j)
                     algo.createNode(packRowID(i, j, v), ROW_NUM_OFFSET + packColID(i, v));
 
         // Column-Number constraints
-        for (int i = 0; i < PROBLEM_SIZE; ++i)
-            for (int j = 0; j < PROBLEM_SIZE; ++j)
-                for (int v = 0; v < PROBLEM_SIZE; ++v)
+        for (int j = 0; j < PROBLEM_SIZE; ++j)
+            for (int v = 0; v < PROBLEM_SIZE; ++v)
+                for (int i = 0; i < PROBLEM_SIZE; ++i)
                     algo.createNode(packRowID(i, j, v), COL_NUM_OFFSET + packColID(j, v));
 
         // Box-Number constraints
-        for (int i = 0; i < PROBLEM_SIZE; ++i)
-            for (int j = 0; j < PROBLEM_SIZE; ++j)
-                for (int v = 0; v < PROBLEM_SIZE; ++v)
+        for (int v = 0; v < PROBLEM_SIZE; ++v)
+            for (int i = 0; i < PROBLEM_SIZE; ++i)
+                for (int j = 0; j < PROBLEM_SIZE; ++j)
                     algo.createNode(packRowID(i, j, v), BOX_NUM_OFFSET + packColID(getBoxID(i, j), v));
 
         // Filled numbers constraints
@@ -718,16 +689,11 @@ public:
                     algo.createNode(packRowID(i, j, problem[i][j] - 1), FILLED_NUM_OFFSET + counter++);
             }
 
-        auto start = std::chrono::steady_clock::now();
+        
 
         bool success = algo.solve();
 
-        cout << "Solution was successfull: " << success << endl;
-
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
-        double ms = duration.count();
-
-        cout << "Solution took " << ms << " microseconds" << endl;
+        // cout << "Solution was successfull: " << success << endl;
 
         // Decoding result
         const vector<uint16_t> solution = algo.getSolution();
@@ -762,46 +728,33 @@ public:
     }
 };
 
-int solve(int* data, int* out)
-{
-    SudokuProblem p(data);
-
-    try
-    {
-        p.solve();
-    }
-    catch (...)
-    {
-        return -1;
-    }
-
-    if (p.hasSolution)
-    {
-        for (int i = 0; i < 9; ++i)
-            for (int j = 0; j < 9; ++j)
-                out[i + j * 9] = p.solvedProblem[i][j];
-
-        return 0;
-    }
-    else
-        return -2;
-}
-
 int main()
 {
-    SudokuProblem p("test_sudoku.txt");
-    p.solve();
+    // Benchmarking based on easy kaggle set
+    // ifstream benchmark_input("test_sudoku_full.txt");
+    ifstream benchmark_input("test_sudoku.txt");
 
-    if (p.hasSolution)
+    auto start = std::chrono::steady_clock::now();
+
+    int problemsCount = 0;
+    while (!benchmark_input.eof())
     {
-        for (int i = 0; i < 9; i++)
-        {
-            for (int j = 0; j < 9; j++)
-                cout << p.solvedProblem[i][j] << " ";
+        string input;
+        benchmark_input >> input;
+        if (input.size() != 81)
+            continue;
 
-            cout << endl;
-        }
+        SudokuProblem p(input);
+        p.solve();
+
+        ++problemsCount;
     }
+
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+    double ms = duration.count();
+
+    cout << "Solution took " << ms << " milliseconds" << endl;
+    cout << "Puzzles/sec " << problemsCount / (ms / 1000) << endl;
 
     cin.get();
 
